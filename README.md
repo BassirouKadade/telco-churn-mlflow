@@ -48,6 +48,14 @@ Jeu de test : 1 409 clients (20 %).
 | Random Forest | 0.799 | 0.650 | 0.527 | 0.582 | 0.836 |
 | Gradient Boosting | 0.805 | **0.669** | 0.524 | 0.588 | **0.844** |
 
+**Comparaison des 3 runs dans l'interface MLflow** (un graphique par métrique) :
+
+![Comparaison des métriques dans MLflow](docs/mlflow_metrics.png)
+
+**Matrice de confusion enregistrée comme artefact** (régression logistique) : sur 374 clients partants, 209 sont détectés et 165 manqués.
+
+![Matrice de confusion dans MLflow](docs/mlflow_confusion_matrix.png)
+
 **Analyse**
 - Les trois modèles atteignent un ROC-AUC proche de 0.84 ; le modèle le plus simple (régression logistique) obtient le meilleur F1.
 - L'accuracy (~80 %) est à relativiser : prédire « reste » pour tout le monde donnerait déjà ~74 %.
@@ -77,6 +85,7 @@ Dans l'interface : **Experiments → telco-churn**, sélectionner les runs puis 
 .
 ├── train.py           # chargement, préprocessing, entraînement et tracking MLflow
 ├── requirements.txt
+├── docs/              # captures d'écran de l'interface MLflow
 ├── README.md
 └── LICENSE
 # générés à l'exécution (ignorés par git) :
