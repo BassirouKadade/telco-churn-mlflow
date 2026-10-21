@@ -1,16 +1,13 @@
 """
-Prédiction du churn client (dataset Kaggle "Telco Customer Churn") avec suivi MLflow.
+Étape 3 : entraîne et compare plusieurs modèles, avec suivi MLflow.
 
 Chaque modèle entraîné = un "run" MLflow, avec ses paramètres, ses métriques,
-sa matrice de confusion et le modèle lui-même sauvegardé.
-
-Usage :
-    python train.py                       # entraîne les 3 modèles (télécharge le CSV si besoin)
-    python train.py --data mon_fichier.csv
-Puis :
-    mlflow ui --backend-store-uri sqlite:///mlflow.db
+sa matrice de confusion, le modèle lui-même et l'empreinte des données utilisées
+(le même hash md5 que DVC, pour relier chaque run à une version précise des données).
+Les scores sont aussi écrits dans metrics.json pour `dvc metrics show`.
 """
-import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import matplotlib
@@ -19,6 +16,7 @@ import matplotlib.pyplot as plt
 import mlflow
 import mlflow.sklearn
 import pandas as pd
+import yaml
 from mlflow.models import infer_signature
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -31,67 +29,57 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-HERE = Path(__file__).parent
-CSV_NAME = "WA_Fn-UseC_-Telco-Customer-Churn.csv"
-DEFAULT_DATA = HERE / "data" / CSV_NAME
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "data" / "processed"
+NUMERIC = ["tenure", "MonthlyCharges", "TotalCharges", "SeniorCitizen"]
+MODEL_CLASSES = {
+    "logistic_regression": LogisticRegression,
+    "random_forest": RandomForestClassifier,
+    "gradient_boosting": GradientBoostingClassifier,
+}
 
 
-def get_data_path(path):
-    """Renvoie le chemin du CSV ; s'il est absent, le télécharge depuis Kaggle (sans compte)."""
-    if Path(path).exists():
-        return path
-    import kagglehub
-    print("CSV introuvable, téléchargement depuis Kaggle...")
-    return Path(kagglehub.dataset_download("blastchar/telco-customer-churn")) / CSV_NAME
+def md5(path):
+    return hashlib.md5(path.read_bytes()).hexdigest()
 
 
-def load_data(path):
-    df = pd.read_csv(path)
-    # TotalCharges contient des espaces pour les nouveaux clients -> NaN puis 0
-    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
-    # entiers -> float pour que le schéma MLflow accepte d'éventuelles valeurs manquantes
-    df[["tenure", "SeniorCitizen"]] = df[["tenure", "SeniorCitizen"]].astype(float)
-    df = df.drop(columns=["customerID"])
-    y = (df.pop("Churn") == "Yes").astype(int)
+def load(name):
+    df = pd.read_csv(DATA / name)
+    y = df.pop("Churn")
     return df, y
 
 
 def build_pipeline(model, X):
-    numeric = ["tenure", "MonthlyCharges", "TotalCharges", "SeniorCitizen"]
-    categorical = [c for c in X.columns if c not in numeric]
+    categorical = [c for c in X.columns if c not in NUMERIC]
     preprocess = ColumnTransformer([
-        ("num", StandardScaler(), numeric),
+        ("num", StandardScaler(), NUMERIC),
         ("cat", OneHotEncoder(handle_unknown="ignore"), categorical),
     ])
     return Pipeline([("preprocess", preprocess), ("model", model)])
 
 
-# Les modèles à comparer (leurs hyperparamètres seront loggés automatiquement)
-MODELS = {
-    "logistic_regression": LogisticRegression(max_iter=1000, C=1.0),
-    "random_forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42),
-    "gradient_boosting": GradientBoostingClassifier(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42),
-}
+def make_model(name, hyperparams, random_state):
+    cls = MODEL_CLASSES[name]
+    if "random_state" in cls().get_params():
+        hyperparams = {**hyperparams, "random_state": random_state}
+    return cls(**hyperparams)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default=str(DEFAULT_DATA))
-    args = parser.parse_args()
+    params = yaml.safe_load(open(ROOT / "params.yaml"))["train"]
+    X_train, y_train = load("train.csv")
+    X_test, y_test = load("test.csv")
+    data_tags = {"data.train_md5": md5(DATA / "train.csv"), "data.test_md5": md5(DATA / "test.csv")}
 
-    X, y = load_data(get_data_path(args.data))
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-
-    mlflow.set_tracking_uri(f"sqlite:///{HERE / 'mlflow.db'}")
+    mlflow.set_tracking_uri(f"sqlite:///{ROOT / 'mlflow.db'}")
     mlflow.set_experiment("telco-churn")
 
-    for name, model in MODELS.items():
+    all_metrics = {}
+    for name, hyperparams in params["models"].items():
+        model = make_model(name, hyperparams, params["random_state"])
         with mlflow.start_run(run_name=name):
             pipe = build_pipeline(model, X_train)
             pipe.fit(X_train, y_train)
@@ -104,6 +92,7 @@ def main():
             mlflow.log_params(model.get_params())
             mlflow.log_param("n_train", len(X_train))
             mlflow.log_param("n_test", len(X_test))
+            mlflow.set_tags(data_tags)
 
             # 2) Métriques : ce qu'on a obtenu
             metrics = {
@@ -114,6 +103,7 @@ def main():
                 "roc_auc": roc_auc_score(y_test, y_proba),
             }
             mlflow.log_metrics(metrics)
+            all_metrics[name] = {k: round(v, 4) for k, v in metrics.items()}
 
             # 3) Artefact : la matrice de confusion en image
             fig, ax = plt.subplots(figsize=(4, 4))
@@ -131,6 +121,8 @@ def main():
             )
 
             print(f"{name:22s} " + "  ".join(f"{k}={v:.3f}" for k, v in metrics.items()))
+
+    (ROOT / "metrics.json").write_text(json.dumps(all_metrics, indent=2))
 
 
 if __name__ == "__main__":

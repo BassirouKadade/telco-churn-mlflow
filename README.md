@@ -1,11 +1,18 @@
-# Prédiction du churn client avec suivi d'expériences MLflow
+# Prédiction du churn client : pipeline MLOps avec MLflow et DVC
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![MLflow](https://img.shields.io/badge/MLflow-3.17-0194E2?logo=mlflow&logoColor=white)
+![DVC](https://img.shields.io/badge/DVC-3.67-945DD6?logo=dvc&logoColor=white)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-1.8-F7931E?logo=scikitlearn&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Projet de machine learning de bout en bout : prédire si un client d'un opérateur télécom va résilier son abonnement, en comparant plusieurs modèles et en traçant chaque expérience avec **MLflow** (paramètres, métriques, artefacts et modèles versionnés).
+Projet de machine learning de bout en bout : prédire si un client d'un opérateur télécom va résilier son abonnement, en comparant plusieurs modèles.
+
+- **DVC** versionne les données et orchestre le pipeline (`download → prepare → train`), avec stockage distant sur Google Drive.
+- **MLflow** trace chaque expérience : paramètres, métriques, artefacts et modèles versionnés.
+- **Git** versionne le code et les hyperparamètres (`params.yaml`).
+
+Chaque résultat est ainsi reproductible : on sait quel code, quelles données et quels réglages l'ont produit.
 
 ## Contexte
 
@@ -17,17 +24,35 @@ Le **churn** (résiliation) coûte cher : retenir un client revient moins cher q
 
 ## Pipeline
 
+Le pipeline est décrit dans [`dvc.yaml`](dvc.yaml) en trois étapes :
+
 ```mermaid
 flowchart LR
-    A[Kaggle<br/>CSV] --> B[Nettoyage<br/>TotalCharges, cible 0/1]
-    B --> C[Split train/test<br/>80/20 stratifié]
-    C --> D[Préprocessing<br/>StandardScaler + OneHotEncoder]
-    D --> E[3 modèles]
-    E --> F[Évaluation<br/>5 métriques]
-    F --> G[(MLflow<br/>tracking + modèles)]
+    K[Kaggle] -->|download| R[(data/raw/<br/>telco_churn.csv)]
+    R -->|prepare| P[(data/processed/<br/>train.csv · test.csv)]
+    P -->|train| M[metrics.json]
+    P -->|train| ML[(MLflow<br/>runs + modèles)]
+    Y[params.yaml] -.-> P
+    Y -.-> M
+    R & P <-.->|dvc push / pull| G[(Google Drive)]
 ```
 
-Le préprocessing et le modèle sont réunis dans un même `Pipeline` scikit-learn : le modèle enregistré accepte directement des données brutes, sans étape de transformation à reproduire à la main.
+| Étape | Script | Rôle |
+|---|---|---|
+| `download` | [`src/download.py`](src/download.py) | Télécharge le CSV brut depuis Kaggle (sans compte) |
+| `prepare` | [`src/prepare.py`](src/prepare.py) | Nettoie (`TotalCharges`, cible 0/1) et sépare train/test (80/20 stratifié) |
+| `train` | [`src/train.py`](src/train.py) | Entraîne 3 modèles (régression logistique, Random Forest, Gradient Boosting), logue tout dans MLflow et écrit `metrics.json` |
+
+Le préprocessing (`StandardScaler` + `OneHotEncoder`) et le modèle sont réunis dans un même `Pipeline` scikit-learn : le modèle enregistré accepte directement des données brutes.
+
+## Versioning des données avec DVC
+
+Les CSV ne sont **pas** stockés dans Git. Git ne garde que leur empreinte md5 (dans `dvc.lock`), et les fichiers eux-mêmes sont envoyés sur un remote **Google Drive** avec `dvc push`.
+
+- **Exécution incrémentale** : `dvc repro` ne relance que les étapes dont le code, les données ou les paramètres ont changé. Modifier un hyperparamètre dans `params.yaml` ne relance que `train`.
+- **Retour dans le temps** : `git checkout <commit> && dvc checkout` restaure le code **et** les données exactes de ce commit.
+- **Lien DVC ↔ MLflow** : chaque run MLflow porte les tags `data.train_md5` et `data.test_md5`, les mêmes empreintes que dans `dvc.lock`. On sait donc sur quelle version des données chaque modèle a été entraîné.
+- **Comparaison** : `dvc params diff` et `dvc metrics diff` comparent réglages et scores entre deux commits.
 
 ## Ce que MLflow enregistre pour chaque run
 
@@ -37,6 +62,7 @@ Le préprocessing et le modèle sont réunis dans un même `Pipeline` scikit-lea
 | **Métriques** | accuracy, precision, recall, F1, ROC-AUC |
 | **Artefacts** | matrice de confusion (PNG) |
 | **Modèle** | pipeline complet avec signature d'entrée/sortie et exemple d'input, prêt à être rechargé ou servi via `mlflow models serve` |
+| **Tags** | empreintes md5 des données train/test (version DVC) |
 
 ## Résultats
 
@@ -68,8 +94,11 @@ git clone https://github.com/BassirouKadade/telco-churn-mlflow.git
 cd telco-churn-mlflow
 pip install -r requirements.txt
 
-# Entraîne les 3 modèles (le dataset est téléchargé automatiquement depuis Kaggle)
-python train.py
+# Exécute tout le pipeline : téléchargement Kaggle → préparation → entraînement
+dvc repro
+
+# Affiche les scores
+dvc metrics show
 
 # Ouvre l'interface MLflow sur http://localhost:5000
 mlflow ui --backend-store-uri sqlite:///mlflow.db --workers 1
@@ -79,17 +108,30 @@ Dans l'interface : **Experiments → telco-churn**, sélectionner les runs puis 
 
 > `--workers 1` évite un plantage du serveur MLflow sous Windows ; l'option peut être omise sous Linux/macOS.
 
+**Tester un autre réglage** : modifier une valeur dans [`params.yaml`](params.yaml) (par exemple `max_depth` du Random Forest), relancer `dvc repro`, puis comparer avec `dvc metrics diff` ou dans MLflow.
+
+**Remote Google Drive** : le remote DVC pointe vers un dossier Google Drive privé (`dvc pull` / `dvc push` demandent donc un accès autorisé). Sans cet accès, `dvc repro` reconstruit les mêmes données depuis Kaggle.
+
 ## Structure
 
 ```
 .
-├── train.py           # chargement, préprocessing, entraînement et tracking MLflow
+├── src/
+│   ├── download.py    # étape 1 : téléchargement Kaggle
+│   ├── prepare.py     # étape 2 : nettoyage + split train/test
+│   └── train.py       # étape 3 : entraînement + tracking MLflow
+├── dvc.yaml           # définition du pipeline DVC
+├── dvc.lock           # empreintes des données et des sorties (généré par DVC)
+├── params.yaml        # hyperparamètres et réglages
+├── metrics.json       # scores du dernier entraînement
+├── .dvc/config        # configuration DVC (remote Google Drive)
 ├── requirements.txt
 ├── docs/              # captures d'écran de l'interface MLflow
 ├── README.md
 └── LICENSE
-# générés à l'exécution (ignorés par git) :
-#   data/  mlflow.db  mlruns/
+# hors Git :
+#   data/              → suivi par DVC, stocké sur Google Drive
+#   mlflow.db, mlruns/ → générés par MLflow
 ```
 
 ## Pistes d'amélioration
@@ -101,7 +143,7 @@ Dans l'interface : **Experiments → telco-churn**, sélectionner les runs puis 
 
 ## Stack
 
-Python · pandas · scikit-learn · MLflow · matplotlib · kagglehub
+Python · pandas · scikit-learn · MLflow · DVC · Google Drive · matplotlib · kagglehub
 
 ## Auteur
 

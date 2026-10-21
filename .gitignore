@@ -1,5 +1,4 @@
-# Données (téléchargées automatiquement depuis Kaggle, non redistribuées)
-data/
+﻿# Les données (data/) sont suivies par DVC, qui gère ses propres .gitignore
 
 # Sorties MLflow (générées localement à chaque entraînement)
 mlflow.db

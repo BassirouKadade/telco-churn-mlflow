@@ -3,3 +3,5 @@ scikit-learn>=1.8
 pandas>=3.0
 matplotlib>=3.10
 kagglehub>=1.0
+pyyaml>=6.0
+dvc[gdrive]>=3.67

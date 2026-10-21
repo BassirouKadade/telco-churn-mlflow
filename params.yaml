@@ -1,0 +1,20 @@
+# Tous les réglages du projet. Modifier une valeur puis lancer `dvc repro` :
+# DVC ne relance que les étapes concernées.
+
+prepare:
+  test_size: 0.2
+  random_state: 42
+
+train:
+  random_state: 42
+  models:
+    logistic_regression:
+      C: 1.0
+      max_iter: 1000
+    random_forest:
+      n_estimators: 200
+      max_depth: 10
+    gradient_boosting:
+      n_estimators: 200
+      learning_rate: 0.05
+      max_depth: 3
