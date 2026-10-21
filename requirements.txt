@@ -1,0 +1,5 @@
+mlflow>=3.17
+scikit-learn>=1.8
+pandas>=3.0
+matplotlib>=3.10
+kagglehub>=1.0

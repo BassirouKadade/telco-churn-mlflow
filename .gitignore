@@ -1,0 +1,19 @@
+# Données (téléchargées automatiquement depuis Kaggle, non redistribuées)
+data/
+
+# Sorties MLflow (générées localement à chaque entraînement)
+mlflow.db
+mlruns/
+mlartifacts/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
